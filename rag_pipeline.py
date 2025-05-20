@@ -1,85 +1,116 @@
-import os
+import pickle
+import logging
 
-from langchain.chains import RetrievalQA
-from langchain.prompts import PromptTemplate
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_community.vectorstores import FAISS
+import faiss
+import numpy as np
+from google import genai
+from sentence_transformers import SentenceTransformer
 
 import config
+from pdf_parser import extract_text_by_headers
+
+# ------ Configuration ------
+PDF_PATH = "Port Tariff.pdf"
+INDEX_PATH = "data/port_tariff.index"
+KEYS_PATH = "data/port_tariff_keys.pkl"
+EMBED_MODEL_NAME = "all-MiniLM-L6-v2"
+GEMINI_MODEL = "gemini-2.0-flash-001"
+TOP_K = 5  # number of chunks to retrieve
+
+# Initialize logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s:%(message)s")
+
+# Initialize the Gemini Developer API client
+client = genai.Client(api_key=config.GEMINI_API_KEY)
 
 
-class TariffRAGPipeline:
-    def __init__(self, vectorstore_path="vectorstore"):
-        self.vectorstore_path = vectorstore_path
-        self.embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2", model_kwargs={"device": "cpu"})
-        self.llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", api_key=config.GEMINI_API_KEY)
-
-    def _load_vectorstore(self):
-        """Load FAISS index from disk"""
-        if not os.path.exists(self.vectorstore_path):
-            raise FileNotFoundError(f"Vectorstore not found at {self.vectorstore_path}")
-
-        return FAISS.load_local(self.vectorstore_path, self.embeddings, allow_dangerous_deserialization=True)
-
-    def _create_qa_chain(self):
-        """Create QA chain with custom prompt"""
-        prompt = PromptTemplate.from_template(
-            """
-        You are a tariff calculation expert analyzing South African port fees.
-
-        Use the following context to answer the question:
-        {context}
-
-        Question: {question}
-
-        Instructions:
-        1. Identify relevant tariff rules from the context
-        2. Extract numerical values and formulas
-        3. Show calculation steps
-        4. Provide final amount with ZAR currency
-        """
-        )
-
-        return RetrievalQA.from_chain_type(
-            llm=self.llm,
-            chain_type="stuff",
-            retriever=self._load_vectorstore().as_retriever(k=4),
-            chain_type_kwargs={"prompt": prompt},
-            return_source_documents=True,
-        )
-
-    def query_tariff(self, question: str):
-        """Process a tariff-related query end-to-end"""
-        qa_chain = self._create_qa_chain()
-        query_result = qa_chain.invoke({"query": question})
-
-        # Format output with source references
-        formatted_result = {
-            "answer": query_result["result"],
-            "sources": [doc.metadata for doc in query_result["source_documents"]],
-            "raw_chunks": [doc.page_content for doc in query_result["source_documents"]],
-        }
-
-        return formatted_result
+def load_index_and_keys():
+    """Load FAISS index and chunk keys."""
+    logging.info(f"Loading FAISS index from {INDEX_PATH}")
+    index = faiss.read_index(INDEX_PATH)
+    with open(KEYS_PATH, "rb") as f:
+        keys = pickle.load(f)
+    logging.info(f"Loaded {len(keys)} chunk keys")
+    return index, keys
 
 
-# Example Usage
-if __name__ == "__main__":
-    # Initialize pipeline
-    pipeline = TariffRAGPipeline()
+# Pre-load resources
+chunks = extract_text_by_headers(PDF_PATH)
+logging.info(f"Extracted {len(chunks)} header-based chunks from PDF")
+embedder = SentenceTransformer(EMBED_MODEL_NAME)
+index, keys = load_index_and_keys()
 
-    # Example query for tariff calculation
-    query = """
-    Calculate light dues for a vessel with:
-    - Length Overall (LOA): 229.2 meters
-    - Port: Durban
-    - Vessel Type: Bulk Carrier
-    - GT: 51,300
+
+def retrieve_relevant_chunks(query, top_k=TOP_K):
+    """
+    Embed the query and retrieve the top_k similar chunks with distances.
+    Returns a list of dicts: {'header', 'text', 'distance'}
+    """
+    # Embed query
+    q_vec = embedder.encode(query).astype("float32")
+    # Search index
+    distances, indices = index.search(np.expand_dims(q_vec, axis=0), top_k)
+    retrieved = []
+    for dist, idx in zip(distances[0], indices[0]):
+        if idx < len(keys):
+            header = keys[idx]
+            text = chunks.get(header, "")
+            retrieved.append({"header": header, "text": text, "distance": float(dist)})
+        else:
+            logging.warning(f"Index returned out-of-range key idx={idx}")
+    # Debug log
+    for item in retrieved:
+        logging.info(f"Retrieved chunk '{item['header']}' (dist={item['distance']:.4f})")
+    return retrieved
+
+
+def generate_answer(query, top_k=TOP_K):
+    """
+    RAG pipeline: retrieve context, call Gemini Developer API, return answer.
+    """
+    # Retrieve
+    retrieved = retrieve_relevant_chunks(query, top_k)
+    if not retrieved:
+        raise ValueError("No relevant chunks found for the query.")
+
+    # Build context
+    context_sections = []
+    for item in retrieved:
+        header = item["header"]
+        snippet = item["text"][:500] + ("..." if len(item["text"]) > 500 else "")  # preview
+        context_sections.append(f"## {header}\n{snippet}")
+    context = "\n\n".join(context_sections)
+
+    # Compose prompt
+    prompt = f"""
+    You are an AI assistant specialized in maritime port tariffs.
+    Use the following extracted sections to answer the user's query accurately.
+    Return all amounts in South African Rand (ZAR) with a clear breakdown by tariff type.
+
+    context: {context}
+    User query: {query}
     """
 
-    result = pipeline.query_tariff(query)
+    logging.info("Sending prompt to Gemini model...")
+    # Call Gemini
+    response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
+    answer = response.text
+    logging.info("Received response from Gemini")
+    return answer
 
-    print("Answer:\n", result["answer"])
-    print("\nSources:\n", result["sources"])
-    print("\nRetrieved Chunks:\n", "\n---\n".join(result["raw_chunks"]))
+
+if __name__ == "__main__":
+    example_query = (
+        "Calculate the following tariffs:\n"
+        "- light dues\n"
+        "- port dues\n"
+        "- towage dues\n"
+        "- vehicle traffic services (VTS) dues\n"
+        "- pilotage dues\n"
+        "- running of vessel lines dues"
+    )
+    try:
+        answer = generate_answer(example_query)
+        print(answer)
+    except Exception as e:
+        logging.error(f"Error in RAG pipeline: {e}")
