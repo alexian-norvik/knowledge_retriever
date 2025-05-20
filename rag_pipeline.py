@@ -97,20 +97,3 @@ def generate_answer(query, top_k=TOP_K):
     answer = response.text
     logging.info("Received response from Gemini")
     return answer
-
-
-if __name__ == "__main__":
-    example_query = (
-        "Calculate the following tariffs:\n"
-        "- light dues\n"
-        "- port dues\n"
-        "- towage dues\n"
-        "- vehicle traffic services (VTS) dues\n"
-        "- pilotage dues\n"
-        "- running of vessel lines dues"
-    )
-    try:
-        answer = generate_answer(example_query)
-        print(answer)
-    except Exception as e:
-        logging.error(f"Error in RAG pipeline: {e}")
