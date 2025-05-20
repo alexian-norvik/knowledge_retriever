@@ -1,111 +1,83 @@
-import os
-from typing import List
+import re
+import pickle
+from pathlib import Path
 
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.docstore.document import Document
-from langchain_community.vectorstores import FAISS
-from langchain_community.document_loaders import PyPDFLoader
-
-
-class TariffProcessor:
-    def __init__(self, pdf_path: str, output_dir: str = "vectorstore"):
-        self.pdf_path = pdf_path
-        self.output_dir = output_dir
-        self.embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2", model_kwargs={"device": "cpu"})
-
-    @staticmethod
-    def _convert_to_markdown(text: str) -> str:
-        """
-        Convert plain text to Markdown format
-        :param text: Plain text.
-        :return: Markdown format of the text.
-        """
-        lines = text.split("\n")
-        result = []
-
-        # Process each line
-        for line in lines:
-            # Clean up extra spaces without regex
-            words = line.split()
-            cleaned_line = " ".join(words)
-
-            # Detect section headers (lines starting with "SECTION")
-            if cleaned_line.upper().startswith("SECTION"):
-                # Split section number and title
-                parts = cleaned_line.split(maxsplit=1)
-                if len(parts) > 1:
-                    section_number = parts[0]
-                    title = parts[1]
-                    result.append(f"### {section_number} {title}")
-                    continue
-
-            # Detect table-like lines (lines containing | characters)
-            if "|" in cleaned_line:
-                # Convert to Markdown table format
-                cells = [cell.strip() for cell in cleaned_line.split("|") if cell.strip()]
-                if cells:
-                    result.append("| " + " | ".join(cells) + " |")
-                    # Add separator line for table headers
-                    if all(cell.replace("-", "").strip() == "" for cell in cells):
-                        result.append("|---" * len(cells) + "|")
-                    continue
-
-            # Add regular lines as-is
-            result.append(cleaned_line)
-
-        return "\n".join(result)
-
-    def _create_document_chunks(self, text: str, source: str) -> List[Document]:
-        """
-        Split text into semantic chunks with metadata
-        :param text: extracted text from pdf
-        :param source: sources of the text
-        :return: List of semantic chunks with metadata
-        """
-        # Convert to markdown
-        md_text = self._convert_to_markdown(text)
-
-        # Create base document
-        doc = Document(page_content=md_text, metadata={"source": source})
-
-        # Split into chunks
-        splitter = RecursiveCharacterTextSplitter(
-            chunk_size=800,
-            chunk_overlap=150,
-            length_function=len,
-        )
-
-        return splitter.split_documents([doc])
-
-    def process_pdf(self) -> str:
-        """
-        Main processing pipeline
-        :return: message that the pdf is processed and chunks are saved.
-        """
-        # Create output directory
-        os.makedirs(self.output_dir, exist_ok=True)
-
-        # Load PDF
-        loader = PyPDFLoader(self.pdf_path)
-        pages = loader.load()
-
-        # Combine all pages
-        full_text = "\n".join([page.page_content for page in pages])
-
-        # Create chunks
-        chunks = self._create_document_chunks(full_text, "Port Tariff.pdf")
-
-        # Create vector store
-        vectorstore = FAISS.from_documents(chunks, self.embeddings)
-
-        # Save locally
-        vectorstore.save_local(self.output_dir)
-
-        return f"Processed {len(chunks)} chunks and saved to {self.output_dir}"
+import fitz
+import faiss
+import numpy as np
+from sentence_transformers import SentenceTransformer
 
 
-# Usage
+def extract_text_by_headers(pdf_path):
+    """
+    Extract text from the PDF and split into chunks based on header lines.
+    Headers are detected as lines starting with 'SECTION <number>' or all-caps lines of length >= 5.
+    """
+    doc = fitz.open(pdf_path)
+    text = ""
+    for page in doc:
+        text += page.get_text()
+    lines = text.splitlines()
+    chunks = {}
+    current_header = None
+    for line in lines:
+        line = line.strip()
+        if re.match(r"^(SECTION\s+\d+|[A-Z\s]{5,})$", line):
+            current_header = line
+            chunks[current_header] = []
+        elif current_header:
+            chunks[current_header].append(line)
+    # Join lines into paragraphs
+    return {h: "\n".join(p).strip() for h, p in chunks.items()}
+
+
+def convert_chunks_to_markdown(chunks, output_path):
+    """
+    Convert header-based chunks to a Markdown file.
+    """
+    md = ""
+    for header, content in chunks.items():
+        md += f"## {header}\n\n{content}\n\n"
+    Path(output_path).write_text(md)
+
+
+def embed_chunks(chunks, model_name="all-MiniLM-L6-v2"):
+    """
+    Generate embeddings for each chunk using a SentenceTransformer model.
+    """
+    model = SentenceTransformer(model_name)
+    embeddings = {header: model.encode(content) for header, content in chunks.items()}
+    return embeddings
+
+
+def build_faiss_index(embeddings, index_path, keys_path):
+    """
+    Build a FAISS index from embeddings and save the index along with the keys mapping.
+    """
+    dim = next(iter(embeddings.values())).shape[0]
+    index = faiss.IndexFlatL2(dim)
+    keys = list(embeddings.keys())
+    matrix = np.vstack([embeddings[k] for k in keys]).astype("float32")
+    index.add(matrix)
+    faiss.write_index(index, index_path)
+    with open(keys_path, "wb") as f:
+        pickle.dump(keys, f)
+
+
+def main():
+    pdf_path = "Port Tariff.pdf"
+    markdown_path = "Port_Tariff.md"
+    index_path = "data/port_tariff.index"
+    keys_path = "data/port_tariff_keys.pkl"
+
+    chunks = extract_text_by_headers(pdf_path)
+    convert_chunks_to_markdown(chunks, markdown_path)
+    embeddings = embed_chunks(chunks)
+    build_faiss_index(embeddings, index_path, keys_path)
+
+    print(f"Markdown saved to {markdown_path}")
+    print(f"FAISS index saved to {index_path} with keys in {keys_path}")
+
+
 if __name__ == "__main__":
-    processor = TariffProcessor(pdf_path="Port Tariff.pdf")
-    print(processor.process_pdf())
+    main()
