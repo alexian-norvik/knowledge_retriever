@@ -64,20 +64,17 @@ def build_faiss_index(embeddings, index_path, keys_path):
         pickle.dump(keys, f)
 
 
-def main():
-    pdf_path = "Port Tariff.pdf"
-    markdown_path = "Port_Tariff.md"
-    index_path = "data/port_tariff.index"
-    keys_path = "data/port_tariff_keys.pkl"
+def main(pdf_path: str) -> str:
+    """
+    run the functions one by one and return message that chunks are saved.
+    """
+    markdown_path = "../Port_Tariff.md"
+    index_path = "../data/port_tariff.index"
+    keys_path = "../data/port_tariff_keys.pkl"
 
     chunks = extract_text_by_headers(pdf_path)
     convert_chunks_to_markdown(chunks, markdown_path)
     embeddings = embed_chunks(chunks)
     build_faiss_index(embeddings, index_path, keys_path)
 
-    print(f"Markdown saved to {markdown_path}")
-    print(f"FAISS index saved to {index_path} with keys in {keys_path}")
-
-
-if __name__ == "__main__":
-    main()
+    return f"FAISS index saved to {index_path} with keys in {keys_path}"

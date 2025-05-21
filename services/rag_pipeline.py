@@ -7,12 +7,12 @@ from google import genai
 from sentence_transformers import SentenceTransformer
 
 import config
-from pdf_parser import extract_text_by_headers
+from services.pdf_parser import extract_text_by_headers
 
 # ------ Configuration ------
-PDF_PATH = "Port Tariff.pdf"
-INDEX_PATH = "data/port_tariff.index"
-KEYS_PATH = "data/port_tariff_keys.pkl"
+PDF_PATH = "../Port Tariff.pdf"
+INDEX_PATH = "../data/port_tariff.index"
+KEYS_PATH = "../data/port_tariff_keys.pkl"
 EMBED_MODEL_NAME = "all-MiniLM-L6-v2"
 GEMINI_MODEL = "gemini-2.0-flash-001"
 TOP_K = 5  # number of chunks to retrieve
