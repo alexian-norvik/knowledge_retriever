@@ -176,5 +176,5 @@ cython_debug/
 # PDF files
 Port Tariff.pdf
 
-# vectorstore
-vectorstore
+# data
+data/
