@@ -21,6 +21,11 @@ source envname/bin/activate  # or `envname\Scripts\activate` on Windows
 pip install -r requirements.txt
 ```
 
+### 3. Install Pre-commit
+```shell
+pre-commit install
+```
+
 ## Usage
 ### 1. Prepare the environment
 
