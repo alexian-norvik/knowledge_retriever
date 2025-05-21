@@ -7,6 +7,8 @@ import faiss
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
+from common import constants, llm_constants
+
 
 def extract_text_by_headers(pdf_path):
     """
@@ -22,7 +24,7 @@ def extract_text_by_headers(pdf_path):
     current_header = None
     for line in lines:
         line = line.strip()
-        if re.match(r"^(SECTION\s+\d+|[A-Z\s]{5,})$", line):
+        if re.match(constants.REGEX_PATTERN, line):
             current_header = line
             chunks[current_header] = []
         elif current_header:
@@ -41,7 +43,7 @@ def convert_chunks_to_markdown(chunks, output_path):
     Path(output_path).write_text(md)
 
 
-def embed_chunks(chunks, model_name="all-MiniLM-L6-v2"):
+def embed_chunks(chunks, model_name=llm_constants.EMBEDDING_MODEL):
     """
     Generate embeddings for each chunk using a SentenceTransformer model.
     """
@@ -68,13 +70,10 @@ def main(pdf_path: str) -> str:
     """
     run the functions one by one and return message that chunks are saved.
     """
-    markdown_path = "../Port_Tariff.md"
-    index_path = "../data/port_tariff.index"
-    keys_path = "../data/port_tariff_keys.pkl"
 
     chunks = extract_text_by_headers(pdf_path)
-    convert_chunks_to_markdown(chunks, markdown_path)
+    convert_chunks_to_markdown(chunks, constants.MARKDOWN_PATH)
     embeddings = embed_chunks(chunks)
-    build_faiss_index(embeddings, index_path, keys_path)
+    build_faiss_index(embeddings, constants.INDEX_PATH, constants.KEYS_PATH)
 
-    return f"FAISS index saved to {index_path} with keys in {keys_path}"
+    return f"FAISS index saved to {constants.INDEX_PATH} with keys in {constants.KEYS_PATH}"

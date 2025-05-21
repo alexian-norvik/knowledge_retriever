@@ -7,15 +7,8 @@ from google import genai
 from sentence_transformers import SentenceTransformer
 
 import config
+from common import constants, llm_constants
 from services.pdf_parser import extract_text_by_headers
-
-# ------ Configuration ------
-PDF_PATH = "../Port Tariff.pdf"
-INDEX_PATH = "../data/port_tariff.index"
-KEYS_PATH = "../data/port_tariff_keys.pkl"
-EMBED_MODEL_NAME = "all-MiniLM-L6-v2"
-GEMINI_MODEL = "gemini-2.0-flash-001"
-TOP_K = 5  # number of chunks to retrieve
 
 # Initialize logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s:%(message)s")
@@ -26,22 +19,22 @@ client = genai.Client(api_key=config.GEMINI_API_KEY)
 
 def load_index_and_keys():
     """Load FAISS index and chunk keys."""
-    logging.info(f"Loading FAISS index from {INDEX_PATH}")
-    index = faiss.read_index(INDEX_PATH)
-    with open(KEYS_PATH, "rb") as f:
+    logging.info(f"Loading FAISS index from {constants.INDEX_PATH}")
+    index = faiss.read_index(constants.INDEX_PATH)
+    with open(constants.KEYS_PATH, "rb") as f:
         keys = pickle.load(f)
     logging.info(f"Loaded {len(keys)} chunk keys")
     return index, keys
 
 
 # Pre-load resources
-chunks = extract_text_by_headers(PDF_PATH)
+chunks = extract_text_by_headers(constants.PDF_PATH)
 logging.info(f"Extracted {len(chunks)} header-based chunks from PDF")
-embedder = SentenceTransformer(EMBED_MODEL_NAME)
+embedder = SentenceTransformer(llm_constants.EMBEDDING_MODEL)
 index, keys = load_index_and_keys()
 
 
-def retrieve_relevant_chunks(query, top_k=TOP_K):
+def retrieve_relevant_chunks(query, top_k=llm_constants.TOP_K):
     """
     Embed the query and retrieve the top_k similar chunks with distances.
     Returns a list of dicts: {'header', 'text', 'distance'}
@@ -64,7 +57,7 @@ def retrieve_relevant_chunks(query, top_k=TOP_K):
     return retrieved
 
 
-def generate_answer(query, top_k=TOP_K):
+def generate_answer(query, top_k=llm_constants.TOP_K):
     """
     RAG pipeline: retrieve context, call Gemini Developer API, return answer.
     """
@@ -93,7 +86,7 @@ def generate_answer(query, top_k=TOP_K):
 
     logging.info("Sending prompt to Gemini model...")
     # Call Gemini
-    response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
+    response = client.models.generate_content(model=llm_constants.GEMINI_MODEL, contents=prompt)
     answer = response.text
     logging.info("Received response from Gemini")
     return answer
